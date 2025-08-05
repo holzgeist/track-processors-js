@@ -1,5 +1,17 @@
 # @livekit/track-processors
 
+## 0.5.8
+
+### Patch Changes
+
+- Only destroy if no newer init method has been invoked - [#90](https://github.com/livekit/track-processors-js/pull/90) ([@lukasIO](https://github.com/lukasIO))
+
+## 0.5.7
+
+### Patch Changes
+
+- fix(deps): include dom-mediacapture-transform types as a dependency - [#86](https://github.com/livekit/track-processors-js/pull/86) ([@CSantosM](https://github.com/CSantosM))
+
 ## 0.5.6
 
 ### Patch Changes
