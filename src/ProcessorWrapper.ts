@@ -1,4 +1,4 @@
-import type { ProcessorOptions, Kind, TrackProcessor } from './LivekitInterface';
+import type { ProcessorOptions, Track, TrackProcessor } from 'livekit-client';
 import { TrackTransformer } from './transformers';
 import { createCanvas, waitForTrackResolution } from './utils';
 
@@ -11,7 +11,7 @@ export interface ProcessorWrapperOptions {
 }
 
 export default class ProcessorWrapper<TransformerOptions extends Record<string, unknown>>
-  implements TrackProcessor<Kind>
+  implements TrackProcessor<Track.Kind>
 {
   /**
    * Determines if the Processor is supported on the current browser
@@ -89,7 +89,7 @@ export default class ProcessorWrapper<TransformerOptions extends Record<string, 
     this.maxFps = options.maxFps ?? 30;
   }
 
-  private async setup(opts: ProcessorOptions<Kind>) {
+  private async setup(opts: ProcessorOptions<Track.Kind>) {
     this.source = opts.track as MediaStreamVideoTrack;
 
     const { width, height } = await waitForTrackResolution(this.source);
@@ -139,7 +139,7 @@ export default class ProcessorWrapper<TransformerOptions extends Record<string, 
     }
   }
 
-  async init(opts: ProcessorOptions<Kind>): Promise<void> {
+  async init(opts: ProcessorOptions<Track.Kind>): Promise<void> {
     await this.setup(opts);
 
     if (!this.canvas) {
@@ -342,7 +342,7 @@ export default class ProcessorWrapper<TransformerOptions extends Record<string, 
     this.animationFrameId = requestAnimationFrame(renderLoop);
   }
 
-  async restart(opts: ProcessorOptions<Kind>): Promise<void> {
+  async restart(opts: ProcessorOptions<Track.Kind>): Promise<void> {
     await this.destroy();
     await this.init(opts);
   }
