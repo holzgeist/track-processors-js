@@ -36,11 +36,13 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
 
   segmentationResults: vision.ImageSegmenterResult | undefined;
 
-  backgroundImage: ImageBitmap | null = null;
+  backgroundImageAndPath: { imageData: ImageBitmap, path: string } | null = null;
 
   options: BackgroundOptions;
 
   segmentationTimeMs: number = 0;
+
+  isFirstFrame = true;
 
   constructor(opts: BackgroundOptions) {
     super();
@@ -73,8 +75,8 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
     });
 
     // Skip loading the image here if update already loaded the image below
-    if (this.options?.imagePath && !this.backgroundImage) {
-      await this.loadBackground(this.options.imagePath).catch((err) =>
+    if (this.options?.imagePath) {
+      await this.loadAndSetBackground(this.options.imagePath).catch((err) =>
         console.error('Error while loading processor background image: ', err),
       );
     }
@@ -86,23 +88,28 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
   async destroy() {
     await super.destroy();
     await this.imageSegmenter?.close();
-    this.backgroundImage = null;
+    this.backgroundImageAndPath = null;
+    this.isFirstFrame = true;
   }
 
-  async loadBackground(path: string) {
-    const img = new Image();
+  async loadAndSetBackground(path: string) {
+    if (!this.backgroundImageAndPath || this.backgroundImageAndPath?.path !== path) {
+      const img = new Image();
 
-    await new Promise((resolve, reject) => {
-      img.crossOrigin = 'Anonymous';
-      img.onload = () => resolve(img);
-      img.onerror = (err) => reject(err);
-      img.src = path;
-    });
-    const imageData = await createImageBitmap(img);
-    this.gl?.setBackgroundImage(imageData);
+      await new Promise((resolve, reject) => {
+        img.crossOrigin = 'Anonymous';
+        img.onload = () => resolve(img);
+        img.onerror = (err) => reject(err);
+        img.src = path;
+      });
+      const imageData = await createImageBitmap(img);
+      this.backgroundImageAndPath = { imageData, path };
+    }
+    this.gl?.setBackgroundImage(this.backgroundImageAndPath.imageData);
   }
 
   async transform(frame: VideoFrame, controller: TransformStreamDefaultController<VideoFrame>) {
+    let enqueuedFrame = false;
     try {
       if (!(frame instanceof VideoFrame) || frame.codedWidth === 0 || frame.codedHeight === 0) {
         console.debug('empty frame detected, ignoring');
@@ -116,17 +123,47 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
 
       if (disabled) {
         controller.enqueue(frame);
+        enqueuedFrame = true;
         return;
       }
+
       const frameTimeMs = Date.now();
       if (!this.canvas) {
         throw TypeError('Canvas needs to be initialized first');
       }
       this.canvas.width = frame.displayWidth;
       this.canvas.height = frame.displayHeight;
+
+      // Render a copy of the first frame is rendered to the screen as soon as possible to act
+      // as a less jarring initial state than a solid color while the synchronous work below
+      // (segmentation + frame rendering) occurs.
+      //
+      // Ideally, these sync tasks could be offloaded to a webworker, but this is challenging
+      // given WebGLTextures cannot be easily passed in a `postMessage`.
+      if (this.isFirstFrame) {
+        controller.enqueue(frame.clone());
+
+        // Wait for the frame that was enqueued above to render before doing the sync work
+        // below - otherwise, the sync work will take over the event loop and prevent the render
+        // from occurring
+        if (this.inputVideo) {
+          await new Promise((resolve) => {
+            this.inputVideo!.requestVideoFrameCallback((_now, e) => {
+              const durationUntilFrameRenderedInMs = e.expectedDisplayTime - e.presentationTime;
+              setTimeout(resolve, durationUntilFrameRenderedInMs);
+            });
+          });
+        }
+      }
+      this.isFirstFrame = false;
+
+      const filterStartTimeMs = performance.now();
+
       const segmentationPromise = new Promise<void>((resolve, reject) => {
         try {
           let segmentationStartTimeMs = performance.now();
+          // NOTE: this.imageSegmenter?.segmentForVideo is synchronous, and blocks the event loop
+          // for tens to ~100 ms! The promise wrapper is just used to flatten out the call hierarchy.
           this.imageSegmenter?.segmentForVideo(frame, segmentationStartTimeMs, (result) => {
             this.segmentationTimeMs = performance.now() - segmentationStartTimeMs;
             this.segmentationResults = result;
@@ -139,7 +176,7 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
         }
       });
 
-      const filterStartTimeMs = performance.now();
+      // NOTE: `this.drawFrame` is synchronous, and could take tens of ms to run!
       this.drawFrame(frame);
       if (this.canvas && this.canvas.width > 0 && this.canvas.height > 0) {
         const newFrame = new VideoFrame(this.canvas, {
@@ -160,7 +197,9 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
     } catch (e) {
       console.error('Error while processing frame: ', e);
     } finally {
-      frame.close();
+      if (!enqueuedFrame) {
+        frame.close();
+      }
     }
   }
 
@@ -169,7 +208,7 @@ export default class BackgroundProcessor extends VideoTransformer<BackgroundOpti
 
     this.gl?.setBlurRadius(opts.blurRadius ?? null);
     if (opts.imagePath) {
-      await this.loadBackground(opts.imagePath);
+      await this.loadAndSetBackground(opts.imagePath);
     } else {
       this.gl?.setBackgroundImage(null);
     }
